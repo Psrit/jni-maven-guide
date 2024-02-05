@@ -1,4 +1,5 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
@@ -42,40 +43,17 @@
             <goals>
               <goal>compile</goal>
             </goals>
-          </execution>
-        </executions>
-      </plugin>
-
-      <!-- generate .h file for classes having native methods-->
-      <!-- this plugin can also package c/c++ file to .so .dll and so on
-           but if you want to do so, you should make another module(create
-           another project having new pom.xml and package the module to
-           .so .dll..., then copy to this module's output classes see
-           http://yiheng.github.io/2016/06/01/build-jni-project-with-maven/),
-           in my opinion which is not conveniently
-      -->
-      <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>native-maven-plugin</artifactId>
-        <executions>
-          <execution>
-            <id>javah</id>
-            <phase>generate-resources</phase>
-            <goals>
-              <goal>javah</goal>
-            </goals>
             <configuration>
-              <javahOutputDirectory>${basedir}/src/main/c</javahOutputDirectory>
-              <javahOutputFileName>learn_jni.h</javahOutputFileName>
-              <javahClassNames>
-                <javahClassName>learn.jni.Sample01</javahClassName>
-              </javahClassNames>
+              <compilerArgs>
+                <arg>-h</arg>
+                <arg>target/headers</arg>
+              </compilerArgs>
             </configuration>
           </execution>
         </executions>
       </plugin>
 
-      <!-- copy .so(it is a share library in linux making by Makefile) to target/classes-->
+      <!-- copy share libraries in clib to target/classes-->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-resources-plugin</artifactId>
