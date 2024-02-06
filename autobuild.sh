@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-for dirname in build clib target
+for dirname in build clib
 do
 if [ -d $dirname ]; then
     rm -rf $dirname
@@ -8,7 +8,5 @@ if [ -d $dirname ]; then
 fi
 done
 
-mvn validate generate-resources
-mkdir build && cd build && cmake .. && make
+mkdir build && cd build && cmake .. && cmake --build .
 cd ..
-mvn compile package
