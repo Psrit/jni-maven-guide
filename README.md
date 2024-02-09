@@ -1,230 +1,173 @@
 # jni-maven-guide
-## 1. 创建maven项目
-```bash
-mvn archetype:generate \
-    -DarchetypeGroupId=org.apache.maven.archetypes \
-    -DarchetypeArtifactId=maven-archetype-quickstart \
-    -DgroupId=<my.groupId> \
-    -DartifactId=<my.artifactId>
+
+本仓库复刻自[ wzt3309 的仓库](https://github.com/wzt3309/jni-maven-guide)。相较于原仓库，本仓库使用 CMake 构建 native 动态链接库，且支持将动态链接库打包进入 jar 包中，jar 包可自动加载动态库。
+
+## 1. 目录结构
+
+```
+.
+├── CMakeLists.txt
+├── README.md
+├── autobuild.sh  # 执行CMake配置、生成和构建的辅助脚本，供mvn调用（参见 pom.xml）
+├── build  # CMake的构建输出目录
+│   ├── CMakeCache.txt
+│   ├── CMakeFiles
+│   ├── Makefile
+│   ├── cmake_install.cmake
+│   ├── copy_libs.cmake
+│   └── libjni-lib.so
+├── clib  # CMake构建得到的动态库将集中于此文件夹下，供mvn打包使用
+│   └── linux-x64  # 动态库依生成平台和CPU架构集中
+│       └── libjni-lib.so
+├── dependency-reduced-pom.xml  # 由maven-shade-plugin生成
+├── pom.xml
+├── src  # 源文件目录
+│   └── main
+│       ├── c
+│       └── java
+└── target  # mvn的构建输出目录
+    ├── classes
+    ├── generated-sources
+    ├── headers
+    ├── jni-1.0.0.jar
+    ├── maven-archiver
+    ├── maven-status
+    └── original-jni-1.0.0.jar
 ```
 
-## 2. 修改目录结构
-> 只是个人习惯,如果不喜欢可自由发挥
+## 2. 构建顺序
 
-1. 在项目根目录下建立clib,用来存放编译好的库文件
-2. 在项目根目录下建立bin,用来项目启动脚本
-3. 进入到src/main 新建c目录 -> src/main/c 用来存放c代码相关内容
-```
--src
---main/c
---main/java
-```
-
-## 3. 添加maven插件
-### java编译插件
-将maven-compiler-plugin的compile目标(goal)附加到Lifecycle phas
-e validate上,保证class编译第一步进行
+### 2.1 为 JNI 生成头文件
+将 maven-compiler-plugin 的 compile 目标附加到 validate 阶段上。在 `configuration/compilerArgs` 中指定 `javac` 的编译参数 `-h target/headers` 以使 `javac` 为 JNI 接口在 target/headers 目录下生成头文件。
 ```xml
 <plugin>
-    <groupId>org.apache.maven.plugins</groupId>
-    <artifactId>maven-compiler-plugin</artifactId>
-    <executions>
-      <execution>
-        <phase>validate</phase>
-        <goals>
-          <goal>compile</goal>
-        </goals>
-      </execution>
-    </executions>
- </plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-compiler-plugin</artifactId>
+  <executions>
+    <execution>
+      <phase>validate</phase>
+      <goals>
+        <goal>compile</goal>
+      </goals>
+      <configuration>
+        <compilerArgs>
+          <arg>-h</arg>
+          <arg>target/headers</arg>
+        </compilerArgs>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
 ```
 
-### .h头文件生成
-传统的方式是使用javah,如`javah MyClass`,现在采用maven插件的方式
-将native-maven-plugin的javah目标绑定在phase generate-resour
-ces上
+### 2.2 编写 C/C++ 代码并编译
+
+C/C++ 部分动态链接库的编译由 CMake 管理。需要注意两点：
+
+1. 将上一步 JNI 头文件的保存目录 target/headers 加入生成目标的包含目录（例如，通过 `target_include_directories`）；
+
+2. 自动将编译得到的库文件放入 clib/\${OS_TYPE}-\${PROCESSOR_TYPE} 目录下，通过如下代码实现：
+
+    ```cmake
+    # 生成复制命令并缓存到 copy_libs.cmake 中
+    file(GENERATE OUTPUT copy_libs.cmake
+        CONTENT "file(COPY $<TARGET_FILE:jni-lib> DESTINATION ${PROJECT_SOURCE_DIR}/clib/${OS_TYPE}-${PROCESSOR_TYPE})"
+    )
+    # 调用 copy_libs.cmake，将动态链接库复制到 clib/${OS_TYPE}-${PROCESSOR_TYPE} 目录
+    add_custom_command(TARGET jni-lib
+        POST_BUILD COMMAND ${CMAKE_COMMAND} -P copy_libs.cmake)
+    ```
+  
+为了让动态库的 CMake 构建过程包含在 Java 构建过程中，编写 autobuild.sh 文件并由 mvn 自动调用（实现于 pom.xml）：
 ```xml
 <plugin>
-    <groupId>org.codehaus.mojo</groupId>
-    <artifactId>native-maven-plugin</artifactId>
-    <executions>
-      <execution>
-        <id>javah</id>
-        <phase>generate-resources</phase>
-        <goals>
-          <goal>javah</goal>
-        </goals>
-        <configuration>
-          <!-- 头文件输出目录 ${basedir}为maven内置变量-->
-          <javahOutputDirectory>${basedir}/src/main/c</javahOutputDirectory>
-          <javahOutputFileName>learn_jni.h</javahOutputFileName>
-          <!-- 需要编译成头文件的class,必须是全限定类名 -->
-          <javahClassNames>
-            <javahClassName>learn.jni.Sample01</javahClassName>
-          </javahClassNames>
-        </configuration>
-      </execution>
-    </executions>
- </plugin>
+  <groupId>org.codehaus.mojo</groupId>
+  <artifactId>exec-maven-plugin</artifactId>
+  <version>3.1.0</version>
+  <executions>
+    <execution>
+      <id>build-c</id>
+      <phase>compile</phase>
+      <goals>
+        <goal>exec</goal>
+      </goals>
+      <configuration>
+        <executable>${project.basedir}/autobuild.sh</executable>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
 ```
 
-### 编写c代码并编译
-根据生成的头文件,可以愉快地在src/main/c里写c代码了,这一步不需要任何java
-或者maven的知识,写完后,使用Makefile或者Virtual Studio编译成动态库
-linux下是.so,windows下是.dll,并将库文件放入clib目录下
+### 2.3 动态库打包
 
-### 复制动态库
-添加与资源文件操作相关的插件maven-resources-plugin,在phase compile
-阶段(当然可以选择其他生命周期,这里无所谓的,即使没有资源在clib中,也不会fail
-)执行目标copy-resources,将动态库复制到target/classes(存放编译后.class
-文件的目录),这样的好处是,打包的时候可以将动态库一起打包,不管是在编码阶段
-还是发布后,都是直接可以在类加载路径下找到动态库,很方便,很统一(有点类似于java 
-web项目).
-
-**不要将动态库放在jar包里,因为Syetem.load没有提供InputStream
-的重载方法,jar不属于文件系统目录,而Syetem.load参数只接受文件
-系统的绝对路径的,放在jar包里会找不到动态库**
-```xml
-  <plugin>
-    <groupId>org.apache.maven.plugins</groupId>
-    <artifactId>maven-resources-plugin</artifactId>
-    <executions>
-      <execution>
-        <id>copy-clib</id>
-        <phase>compile</phase>
-        <goals>
-          <goal>copy-resources</goal>
-        </goals>
-        <configuration>
-          <resources>
-            <resource>
-              <directory>clib</directory>
-            </resource>
-          </resources>
-          <outputDirectory>${project.build.directory}/classes</outputDirectory>
-        </configuration>
-      </execution>
-    </executions>
-  </plugin>
-```
-
-### 打包发布项目
-添加maven-assembly-plugin最大程度自定义地构架发布包
-```xml
- <plugin>
-    <artifactId>maven-assembly-plugin</artifactId>
-    <version>3.1.0</version>
-    <configuration>
-      <descriptors>
-        <descriptor>assembly.xml</descriptor>
-      </descriptors>
-    </configuration>
-    <executions>
-      <execution>
-        <id>package</id>
-        <phase>package</phase>
-        <goals>
-          <goal>single</goal>
-        </goals>
-      </execution>
-    </executions>
- </plugin>
-```
-
-创建assembly.xml指示具体构建方式
-> idea上 "http://maven.apache.org/ASSEMBLY/2.0.0"会
-报"uri not register错误",直接"alt+enter"就可以解决:)
+生成的动态链接库将作为资源文件被打包进 jar 中。为了实现这一目标，首先添加与资源文件操作相关的插件 maven-resources-plugin，在 compile 阶段执行目标 copy-resources，将 clib 目录下的内容（\${OS_TYPE}-\${PROCESSOR_TYPE}/libjni-lib.so，含目录层次结构）复制到 target/classes（对应于编译后 jar 的 CLASSPATH）。
 
 ```xml
-<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.0.0"
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.0.0 http://maven.apache.org/xsd/assembly-2.0.0.xsd">
-    <id>bin</id>
-    <formats>
-        <format>tar.gz</format>
-        <format>dir</format>
-    </formats>
-
-    <dependencySets>
-        <dependencySet>
-            <outputDirectory>/lib</outputDirectory>
-            <useProjectArtifact>false</useProjectArtifact>
-        </dependencySet>
-    </dependencySets>
-
-    <fileSets>
-        <fileSet>
-            <directory>${project.build.directory}/classes</directory>
-            <outputDirectory>/classes</outputDirectory>
-        </fileSet>
-    </fileSets>
-
-    <files>
-        <file>
-            <source>bin/start.sh</source>
-            <outputDirectory>/</outputDirectory>
-            <fileMode>0755</fileMode>
-        </file>
-    </files>
-</assembly>
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-resources-plugin</artifactId>
+  <executions>
+    <execution>
+      <id>copy-clib</id>
+      <phase>compile</phase>
+      <goals>
+        <goal>copy-resources</goal>
+      </goals>
+      <configuration>
+        <resources>
+          <resource>
+            <directory>${project.basedir}/clib</directory>
+          </resource>
+        </resources>
+        <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
 ```
 
-## 使用vscode编写c
-> 更详细操作[coding C/C++ through vscode](https://code.visualstudio.com/docs/languages/cpp)
-1. 使用vscode(July 2017 version 1.15)打开项目文件夹,安装c/c++插件(微软自提供的)
-2. 在用户设置里setting.xml 设置`"C_Cpp.intelliSenseEngine": "Default"` 开启autocomplete等功能(Version 0.12.3: August 17, 2017)
-3. 发现头文件learn_jni.h处`#include <jni.h>`有绿色下划线,将鼠标放上去后,左侧出现黄色灯泡,点击,选择第一个选项,自动在项目根目录下生成.vscode/c\_cpp\_properties.json,并引入了includePath(头文件目录)
-4. 加入项目本身的头文件位置,如本项目,加入这后,就能轻松的ctrl+鼠标 转到定义了(选中,右键,里面有更多查看定义的方法与快捷键)
-```json
-{
-  "name": "Linux",
-  "includePath": [
-      "/usr/include/c++/5.4.0",
-      "/usr/include/x86_64-linux-gnu/c++/5.4.0",
-      "/usr/local/include",
-      "/usr/include",
-      "/usr/include/x86_64-linux-gnu",
-      "/usr/lib/gcc/x86_64-linux-gnu/5/include",
-      "/usr/local/java/jdk1.8.0_101/include",
-      "/usr/local/java/jdk1.8.0_101/include/linux",
-      "${workspaceRoot}/src/main/c"
-  ],
-  "defines": [],
-  "intelliSenseMode": "clang-x64",
-  "browse": {
-      "path": [
-          "/usr/include/c++/5.4.0",
-          "/usr/include/x86_64-linux-gnu/c++/5.4.0",
-          "/usr/local/include",
-          "/usr/include",
-          "/usr/include/x86_64-linux-gnu",
-          "/usr/lib/gcc/x86_64-linux-gnu/5/include",
-          "/usr/local/java/jdk1.8.0_101/include",
-          "/usr/local/java/jdk1.8.0_101/include/linux",
-          "${workspaceRoot}/src/main/c"
-      ],
-      "limitSymbolsToIncludedHeaders": true,
-      "databaseFilename": ""
-  }
-},
+然后添加 maven-shade-plugin 自定义打包内容。实际上，下面的配置仅仅指定了将哪些第三方包打包进入 jar 中，动态库的打包已经自动执行了。
+```xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-shade-plugin</artifactId>
+  <version>3.5.0</version>
+  <executions>
+    <execution>
+      <id>package-with-third-parties</id>
+      <phase>package</phase>
+      <goals>
+        <goal>shade</goal>
+      </goals>
+    </execution>
+  </executions>
+  <configuration>
+    <artifactSet>
+      <includes>
+        <include>org.apache.commons:commons-lang3</include>
+      </includes>
+      <excludes>
+        <exclude>classworlds:classworlds</exclude>
+        <exclude>junit:junit</exclude>
+        <exclude>jmock:*</exclude>
+        <exclude>*:xml-apis</exclude>
+        <exclude>org.apache.maven:lib:tests</exclude>
+        <exclude>log4j:log4j:jar:</exclude>
+      </excludes>
+    </artifactSet>
+  </configuration>
+</plugin>
 ```
-5. 建立自动build任务,由于我们已经有了Makefile文件,因此只需要vscode执行make就行了
-`ctrl+shitf+p`打开命令框,输入Task:Run build task,生成tasks.json文件在.vscode下
-修改[更具体的操作](https://code.visualstudio.com/docs/editor/tasks)
-```json
-{
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "taskName": "build share library",
-            "type": "shell",
-            "command": "make",
-            "args": [],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
-        }
-    ]
-}
-```
+
+### 2.4 动态库调用
+
+为了解决 `System.load` 只能接受动态链接库的绝对路径而无法加载 jar 包内部动态库的问题，实现了 `learn.jni.LibLoader` 类，该类提供 public 方法 `load`，可接受 jar 包内的动态库名（不包含任何父目录、无后缀）作为参数，自动完成动态库的加载。例如，在 x64 Linux 系统下 `LibLoader.load("libjni-lib")` 将加载 jar 包中 linux-x64/libjni-lib.so 路径指定的动态库。
+
+该方法的原理是复制 jar 包内的动态库到某临时文件，然后通过 `System.load` 加载该临时文件。具体如下：
+
+1. 使用 `LibLoader.class.getResourceAsStream` 读取 jar 包内动态库的二进制内容并写入到一个临时文件（通过 `File.createTempFile` 创建）中。
+
+2. 假设该临时文件对象为 `libTempFile`，`System.load(libTempFile.getCanonicalPath())` 调用将加载该临时文件作为实际使用的动态库。
+
+更详细的内容参见源代码。
