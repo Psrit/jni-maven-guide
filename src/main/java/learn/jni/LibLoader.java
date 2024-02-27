@@ -31,9 +31,9 @@ public class LibLoader {
     }
 
     private static String getLibSuffix() {
-        if (getOsName() == "windows") {
+        if (getOsName().equals("windows")) {
             return ".dll";
-        } else if (getOsName() == "darwin") {
+        } else if (getOsName().equals("darwin")) {
             return ".dylib";
         } else {
             return ".so";
