@@ -171,3 +171,15 @@ C/C++ 部分动态链接库的编译由 CMake 管理。需要注意两点：
 2. 假设该临时文件对象为 `libTempFile`，`System.load(libTempFile.getCanonicalPath())` 调用将加载该临时文件作为实际使用的动态库。
 
 更详细的内容参见源代码。
+
+## 3. 开发步骤
+
+基于本仓库模板，可处理一般的 JNI 开发任务。操作步骤如下：
+
+1. 在仓库根目录运行 `mvn validate`，为 JNI 类型生成头文件。
+
+2. 编写 JNI 方法相应的 C/C++ 代码，根据需要修改 `CMakeLists.txt` 的内容。
+
+3. 运行 `mvn package`，将 Java class 和 JNI 动态链接库打包为 jar 文件。对于本仓库实例，得到的 jar 文件位于 `target/jni-1.0.0.jar`。
+
+4. 运行 `java -cp ./target/jni-1.0.0.jar learn.jni.Sample01` 命令，得到期望的输出结果，表明编译打包成功。
